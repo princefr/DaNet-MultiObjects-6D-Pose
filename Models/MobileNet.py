@@ -136,7 +136,7 @@ def rpn(image, base_layers, num_anchors):
     return keras.Model(image, [x_class, x_regr], name="rpn_model")
 
 
-def pose(base_layers, rpn, pool_size, num_classes, train_bn=True):
+def pose(base_layers, input_rois, num_rois, pool_size, num_classes, train_bn=True):
     """
     inspired by https://github.com/kemangjaka/Deep-6dPose/blob/44841f4f428b679752ef52014cb06364385d06ff/mrcnn/model.py
     :param base_layers:
@@ -148,17 +148,20 @@ def pose(base_layers, rpn, pool_size, num_classes, train_bn=True):
     """
 
     # roipooling before passing.
-    x = keras.layers.TimeDistributed(Conv2D(1024, (pool_size, pool_size), padding="valid"), name="frcnn_pose_conv1")
-    x = keras.layers.TimeDistributed(BatchNormalization(), name='frcnn_pose_bn1')(x, training=train_bn)(x)
+    pooling_regions = 14
+    input_shape = (num_rois, 14, 14, 1024)
+    out_roi_pool = ROIPooling(pooling_regions, num_rois)([base_layers, input_rois])
+    x = keras.layers.TimeDistributed(Conv2D(384, (pool_size, pool_size), padding="valid"), input_shape=input_shape, name="frcnn_pose_conv1")(out_roi_pool)
+    x = keras.layers.TimeDistributed(BatchNormalization(), name='frcnn_pose_bn1')(x, training=train_bn)
     x = keras.layers.Activation(tf.nn.relu)(x)
 
-    x = keras.layers.TimeDistributed(Conv2D(1024, (pool_size, pool_size), padding="valid"), name="frcnn_pose_conv2")(x)
-    x = keras.layers.TimeDistributed(BatchNormalization(), name='frcnn_pose_bn2')(x, training=train_bn)(x)
+    x = keras.layers.TimeDistributed(Conv2D(384, (pool_size, pool_size), padding="valid"), name="frcnn_pose_conv2")(x)
+    x = keras.layers.TimeDistributed(BatchNormalization(), name='frcnn_pose_bn2')(x, training=train_bn)
     x = keras.layers.Activation(tf.nn.relu)(x)
 
 
-    x = keras.layers.TimeDistributed(Conv2D(384, (1, 1)), name="frcnn_pose_conv3")(x)
-    x = keras.layers.TimeDistributed(BatchNormalization(), name='frcnn_pose_bn3')(x, training=train_bn)(x)
+    x = keras.layers.TimeDistributed(Conv2D(384, (2, 2)), name="frcnn_pose_conv3")(x)
+    x = keras.layers.TimeDistributed(BatchNormalization(), name='frcnn_pose_bn3')(x, training=train_bn)
     x = keras.layers.Activation(tf.nn.relu)(x)
     shared = Lambda(lambda x: K.squeeze(K.squeeze(x, 3), 2), name="pool_squeeze_pose")(x)
 
@@ -168,12 +171,12 @@ def pose(base_layers, rpn, pool_size, num_classes, train_bn=True):
     # Pose head
     # [batch, boxes, num_classes * (rx, ry, rz, tz)]
     x = keras.layers.TimeDistributed(Dense(num_classes * 4, activation='linear'),
-                           name='mrcnn_pose_fc')(shared)
+                           name='frcnn_pose_fc')(shared)
     # Reshape to [batch, boxes, num_classes, (rx, ry, rz, tz)]
     s = K.int_shape(x)
-    frcnn_pose = keras.layers.Reshape((s[1], num_classes, 4), name="mrcnn_pose")(x)
+    frcnn_pose = keras.layers.Reshape((s[1], num_classes, 4), name="frcnn_pose")(x)
 
-    return keras.Model([base_layers, rpn], frcnn_pose)
+    return keras.Model([base_layers, input_rois], frcnn_pose)
 
 
 def identity_block_td(input_tensor, kernel_size, filters, stage, block, trainable=True):
@@ -201,6 +204,12 @@ def classifier_layers(x, input_shape, trainable=False):
     x = TimeDistributed(AveragePooling2D((7, 7)), name='avg_pool')(x)
     return x
 
+
+def roi_pooling(base_layers, input_rois, num_rois):
+    pooling_regions = 14
+    input_shape = (num_rois, 14, 14, 1024)
+    out_roi_pool = ROIPooling(pooling_regions, num_rois)([base_layers, input_rois])
+    return out_roi_pool, input_shape
 
 def Classifier(image, base_layers, input_rois, num_rois, nb_classes=21, trainable=False):
     # compile times on theano tend to be very high, so we use smaller ROI pooling regions to workaround
